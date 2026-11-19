@@ -63,6 +63,19 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 <p class="hint">PNG・PDFはGitHub Pagesなどに配置した公開URLを登録してください。資料情報はCloud Firestoreで共有されます。PNGは画面幅に合わせて表示し、PDFはページ内でプレビューします。公開URLのファイルはログインしていない人にも閲覧される可能性があります。</p>
 </section>
 
+<section id="bulkEditor" class="panel hidden">
+<h2>分析資料を一括登録（野手・投手）</h2>
+<p class="hint">GitHubの <code>individual-data-test/reports/野手/</code> と <code>reports/投手/</code> に、同じ名前の資料を先にアップロードしてください。公開URLの資料はログインなしでも閲覧できます。</p>
+<div class="grid">
+<div><label for="folderFiles">パソコンの reports フォルダを選択</label><input id="folderFiles" type="file" webkitdirectory directory multiple accept=".png,.pdf,image/png,application/pdf"><p class="hint">フォルダ内のファイル名と野手・投手の区分を読み取ります。ファイル本体はアップロードしません。</p></div>
+<div><label for="repoBase">GitHub Pagesの公開URL（reports の直前まで）</label><input id="repoBase" type="url" value="https://hokkaigakuen.github.io/individual-data-test/"></div>
+</div>
+<div class="actions"><button class="secondary" id="previewBulk">登録内容を確認</button><button class="primary" id="saveBulk" disabled>確認した資料を一括登録</button></div>
+<div id="bulkSummary" class="hint" aria-live="polite">フォルダを選択して「登録内容を確認」を押してください。</div>
+<div id="bulkPreview" style="overflow-x:auto;margin-top:12px"></div>
+<p class="hint">同じ区分・選手名の既存のPNG/PDF資料があれば、新しいURLで置き換えます。関連リンクは変更しません。最初は野手・投手各1人でテストしてください。</p>
+</section>
+
 <section class="panel">
 <h2>選手を選択して資料を見る</h2>
 <div class="tabs"><button class="tab active" data-position="野手">野手</button><button class="tab" data-position="投手">投手</button></div>
@@ -108,6 +121,7 @@ let activePosition = "野手";
 let allItems = [];
 let unsubscribeItems = null;
 let authRevision = 0;
+let bulkCandidates = [];
 
 function showMessage(text) {
   $("message").textContent = text;
@@ -137,6 +151,7 @@ function setSignedOut() {
   $("loginBtn").classList.remove("hidden");
   $("logoutBtn").classList.add("hidden");
   $("editor").classList.add("hidden");
+  $("bulkEditor").classList.add("hidden");
   $("cards").innerHTML = '<div class="empty">Googleログインすると資料を閲覧できます。</div>';
   $("filterPlayer").innerHTML = '<option value="">選手を選択してください</option>';
   $("count").textContent = "0件";
@@ -252,6 +267,73 @@ $("addBtn").addEventListener("click", async () => {
     showMessage(e.message || "登録できませんでした。Firestoreの権限と通信状態を確認してください。");
   } finally { btn.disabled = false; btn.textContent = "登録する"; }
 });
+
+// GitHub Pages に先に公開した資料のパスをローカルフォルダから読み取り、Firestoreに登録する。
+function buildBulkCandidates() {
+  const files = Array.from($("folderFiles").files || []);
+  const base = safeUrl($("repoBase").value.trim());
+  if (!base || !base.startsWith("https://")) throw new Error("GitHub PagesのHTTPS公開URLを入力してください。");
+  const baseUrl = base.endsWith("/") ? base : base + "/";
+  const seen = new Set();
+  const result = [];
+  for (const file of files) {
+    const rel = (file.webkitRelativePath || file.name).replace(/\\/g, "/");
+    const parts = rel.split("/").filter(Boolean);
+    // reports/野手/氏名.png または選択したreportsフォルダ内の野手/氏名.png
+    const idx = parts.findIndex(p => p === "野手" || p === "投手");
+    if (idx < 0 || idx !== parts.length - 2) continue;
+    const position = parts[idx];
+    const match = /^(.+)\.(png|pdf)$/i.exec(parts[parts.length-1]);
+    if (!match) continue;
+    const player = match[1].trim();
+    if (!player) continue;
+    const key = position + "::" + player;
+    if (seen.has(key)) throw new Error(`同じ選手の資料が重複しています：${position}／${player}`);
+    seen.add(key);
+    const type = match[2].toLowerCase();
+    const url = baseUrl + ["reports", position, parts[parts.length-1]].map(encodeURIComponent).join("/");
+    result.push({position, player, title: "分析レポート", type, url, fileName: parts[parts.length-1]});
+  }
+  if (!result.length) throw new Error("野手・投手フォルダ内のPNG/PDFが見つかりません。reportsフォルダを選択してください。");
+  return result.sort((a,b) => a.position.localeCompare(b.position,"ja") || a.player.localeCompare(b.player,"ja"));
+}
+$("previewBulk").addEventListener("click", () => {
+  $("saveBulk").disabled = true;
+  bulkCandidates = [];
+  $("bulkPreview").innerHTML = "";
+  try {
+    bulkCandidates = buildBulkCandidates();
+    const existingCount = bulkCandidates.filter(c => allItems.some(x => x.position === c.position && x.player === c.player && ["png","pdf"].includes(x.type))).length;
+    $("bulkSummary").textContent = `${bulkCandidates.length}件を確認しました（既存資料の置換候補：${existingCount}件）。GitHubで公開済みのファイルと名前が一致するか確認してください。`;
+    $("bulkPreview").innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr><th>区分</th><th>選手名</th><th>ファイル名</th><th>公開URL</th></tr></thead><tbody>${bulkCandidates.map(c=>`<tr><td>${escapeHtml(c.position)}</td><td>${escapeHtml(c.player)}</td><td>${escapeHtml(c.fileName)}</td><td style="overflow-wrap:anywhere"><a href="${escapeAttr(c.url)}" target="_blank" rel="noopener noreferrer">資料を確認</a></td></tr>`).join("")}</tbody></table>`;
+    $("saveBulk").disabled = false;
+  } catch(e) { $("bulkSummary").textContent = e.message; }
+});
+$("folderFiles").addEventListener("change", () => { bulkCandidates = []; $("saveBulk").disabled = true; $("bulkSummary").textContent = "フォルダを読み込みました。登録内容を確認してください。"; });
+$("repoBase").addEventListener("input", () => { bulkCandidates = []; $("saveBulk").disabled = true; });
+$("saveBulk").addEventListener("click", async () => {
+  if (!isAnalyst || !currentUser || !bulkCandidates.length) return;
+  if (!confirm(`${bulkCandidates.length}人分の分析資料をFirestoreに登録します。既存の同選手のPNG/PDF資料は置き換えます。続けますか？`)) return;
+  const btn = $("saveBulk"); btn.disabled = true;
+  let saved = 0;
+  try {
+    for (const c of bulkCandidates) {
+      const existing = allItems.filter(x => x.position === c.position && x.player === c.player && ["png","pdf"].includes(x.type));
+      // 新規データを先に書き込み、成功後に旧データを削除する。
+      const ref = db.collection(COLLECTION).doc();
+      await ref.set({position:c.position,player:c.player,title:c.title,type:c.type,url:c.url,createdAt:firebase.firestore.FieldValue.serverTimestamp(),createdBy:currentUser.uid});
+      for (const old of existing) await db.collection(COLLECTION).doc(old.id).delete();
+      saved++;
+      $("bulkSummary").textContent = `${saved} / ${bulkCandidates.length} 件を保存中...`;
+    }
+    $("bulkSummary").textContent = `${saved}件の登録が完了しました。野手・投手から選手を選択して確認してください。`;
+    bulkCandidates = [];
+  } catch(e) {
+    console.error(e);
+    $("bulkSummary").textContent = `${saved}件登録後にエラーが発生しました：${e.message}。残りを再実行する前に登録済み資料を確認してください。`;
+  } finally { btn.disabled = true; }
+});
+
 auth.onAuthStateChanged(async user => {
   const revision = ++authRevision;
   hideMessage();
@@ -276,6 +358,7 @@ auth.onAuthStateChanged(async user => {
   $("loginBtn").classList.add("hidden");
   $("logoutBtn").classList.remove("hidden");
   $("editor").classList.toggle("hidden", !isAnalyst);
+  $("bulkEditor").classList.toggle("hidden", !isAnalyst);
   if (approved) startDataListener();
   else {
     allItems = [];
