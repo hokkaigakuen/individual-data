@@ -53,15 +53,14 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 <section id="editor" class="panel hidden">
 <h2>資料・リンクを登録</h2>
 <div class="grid">
-<div><label for="kind">登録する内容</label><select id="kind"><option value="file">PNG・PDFファイル</option><option value="link">リンク</option></select></div>
+<div><label for="kind">登録する内容</label><select id="kind"><option value="png">PNG画像（URL）</option><option value="pdf">PDF資料（URL）</option><option value="link">関連リンク</option></select></div>
 <div><label for="position">区分</label><select id="position"><option value="野手">野手</option><option value="投手">投手</option></select></div>
 <div><label for="player">選手名</label><input id="player" placeholder="例：山田 太郎" autocomplete="off"></div>
 <div><label for="title">表示名（資料名／リンク先の名前）</label><input id="title" placeholder="例：打撃分析レポート"></div>
-<div id="fileWrap"><label for="file">PNGまたはPDF</label><input id="file" type="file" accept="image/png,application/pdf"></div>
-<div id="urlWrap" class="hidden"><label for="url">リンクURL</label><input id="url" type="url" placeholder="https://..."></div>
+<div id="urlWrap"><label for="url" id="urlLabel">PNG画像の公開URL</label><input id="url" type="url" placeholder="https://hokkaigakuen.github.io/..."></div>
 </div>
 <div class="actions"><button class="primary" id="addBtn">登録する</button><button class="secondary" id="clearBtn" type="button">入力をクリア</button></div>
-<p class="hint">ファイルはFirebase Storage、資料情報はCloud Firestoreに保存します。PNGは表示領域に合わせて自動縮小し、PDFはページ内でプレビューします。アップロード上限は1ファイル50MBです。</p>
+<p class="hint">PNG・PDFはGitHub Pagesなどに配置した公開URLを登録してください。資料情報はCloud Firestoreで共有されます。PNGは画面幅に合わせて表示し、PDFはページ内でプレビューします。公開URLのファイルはログインしていない人にも閲覧される可能性があります。</p>
 </section>
 
 <section class="panel">
@@ -77,13 +76,12 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 <div class="results-head"><h2 id="listTitle">野手の資料</h2><span class="count" id="count">0件</span></div>
 <div id="cards" class="cards"><div class="empty">ログイン後、選手を選択してください。</div></div>
 </section>
-<p class="hint">選手・閲覧者はログイン後に閲覧できます。資料の追加・削除はアナリスト用Googleアカウントのみ可能です。</p>
+<p class="hint">承認済み選手はログイン後に閲覧できます。資料の追加・削除はアナリスト用Googleアカウントのみ可能です。</p>
 </main>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-storage-compat.js"></script>
 <script>
 // HGU-Lab共通Firebaseプロジェクト
 const firebaseConfig = {
@@ -99,19 +97,17 @@ const firebaseConfig = {
 // 既存HGU-LabのFirestoreルールで編集を許可しているアナリストのメールアドレスと同じ値にする
 const ANALYST_EMAIL = "hokkaigakuenbaseball@gmail.com";
 const COLLECTION = "individualPageItems";
-const STORAGE_ROOT = "individual-pages";
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
 firebase.apps.length ? firebase.app() : firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
-const storage = firebase.storage();
 const $ = id => document.getElementById(id);
 let currentUser = null;
 let isAnalyst = false;
 let activePosition = "野手";
 let allItems = [];
 let unsubscribeItems = null;
+let authRevision = 0;
 
 function showMessage(text) {
   $("message").textContent = text;
@@ -132,6 +128,7 @@ function safeUrl(value) {
   } catch { return ""; }
 }
 function setSignedOut() {
+  authRevision++;
   currentUser = null; isAnalyst = false; allItems = [];
   $("loginState").textContent = "ログインしていません";
   $("userEmail").textContent = "HGU-Lab共通のGoogleアカウントでログインしてください";
@@ -181,8 +178,8 @@ function render() {
   $("cards").innerHTML = list.map(x => {
     const created = x.createdAt && x.createdAt.toDate ? x.createdAt.toDate().toLocaleDateString("ja-JP") : "";
     let body = "";
-    if (x.type === "png") body = `<img src="${escapeAttr(x.downloadURL)}" alt="${escapeAttr(x.title)}" loading="lazy">`;
-    else if (x.type === "pdf") body = `<iframe class="pdf" src="${escapeAttr(x.downloadURL)}#toolbar=1&navpanes=0" title="${escapeAttr(x.title)}"></iframe><p class="hint"><a href="${escapeAttr(x.downloadURL)}" target="_blank" rel="noopener">PDFを別タブで開く</a></p>`;
+    if (x.type === "png") body = `<img src="${escapeAttr(safeUrl(x.url || x.downloadURL))}" alt="${escapeAttr(x.title)}" loading="lazy">`;
+    else if (x.type === "pdf") { const pdfUrl = safeUrl(x.url || x.downloadURL); body = `<iframe class="pdf" src="${escapeAttr(pdfUrl)}" title="${escapeAttr(x.title)}"></iframe><p class="hint"><a href="${escapeAttr(pdfUrl)}" target="_blank" rel="noopener noreferrer">PDFを別タブで開く</a></p>`; }
     else if (x.type === "link") body = `<a class="link-card" href="${escapeAttr(safeUrl(x.url))}" target="_blank" rel="noopener noreferrer"><span class="link-icon">↗</span><span>${escapeHtml(x.title)}<br><small style="font-weight:400">${escapeHtml(x.url)}</small></span></a>`;
     return `<article class="item"><div class="item-top"><div><div class="item-title">${escapeHtml(x.title)}</div><div class="item-meta">${escapeHtml(x.position)}・${escapeHtml(x.player)}${created ? "・"+created : ""}</div></div>${isAnalyst ? `<button class="danger" data-delete="${escapeAttr(x.id)}">削除</button>` : ""}</div><div class="item-body">${body}</div></article>`;
   }).join("");
@@ -193,21 +190,20 @@ async function deleteItem(id) {
   const item = allItems.find(x => x.id === id);
   if (!item || !confirm(`「${item.title}」を削除しますか？`)) return;
   try {
-    if (item.storagePath) {
-      try { await storage.ref(item.storagePath).delete(); }
-      catch (e) { if (e.code !== "storage/object-not-found") throw e; }
-    }
     await db.collection(COLLECTION).doc(id).delete();
     showMessage("資料を削除しました。");
   } catch (e) {
     console.error(e); showMessage("削除できませんでした。権限または通信状態を確認してください。");
   }
 }
-$("kind").addEventListener("change", () => {
-  const isFile = $("kind").value === "file";
-  $("fileWrap").classList.toggle("hidden", !isFile);
-  $("urlWrap").classList.toggle("hidden", isFile);
-});
+function updateKindLabel() {
+  const kind = $("kind").value;
+  $("urlLabel").textContent = kind === "png" ? "PNG画像の公開URL" : kind === "pdf" ? "PDF資料の公開URL" : "リンクURL";
+  $("url").placeholder = kind === "link" ? "https://example.com/" : "https://hokkaigakuen.github.io/...";
+}
+$("kind").addEventListener("change", updateKindLabel);
+updateKindLabel();
+
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
   activePosition = tab.dataset.position;
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === tab));
@@ -215,7 +211,7 @@ document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", (
 }));
 $("filterPlayer").addEventListener("change", render);
 $("clearBtn").addEventListener("click", () => {
-  $("player").value = ""; $("title").value = ""; $("file").value = ""; $("url").value = "";
+  $("player").value = ""; $("title").value = ""; $("url").value = "";
 });
 $("loginBtn").addEventListener("click", async () => {
   hideMessage();
@@ -241,53 +237,52 @@ $("addBtn").addEventListener("click", async () => {
   if (!player) return showMessage("選手名を入力してください。");
   if (!title) return showMessage("表示名を入力してください。");
   const btn = $("addBtn"); btn.disabled = true; btn.textContent = "登録中...";
-  let storagePath = "";
   try {
-    let record = {position, player, title, createdAt: firebase.firestore.FieldValue.serverTimestamp(), createdBy: currentUser.uid};
-    if (kind === "file") {
-      const file = $("file").files[0];
-      if (!file) throw new Error("PNGまたはPDFファイルを選択してください。");
-      const isPng = file.type === "image/png";
-      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-      if (!isPng && !isPdf) throw new Error("対応形式はPNGとPDFです。");
-      if (file.size > MAX_FILE_SIZE) throw new Error("ファイルは50MB以下にしてください。");
-      const ext = isPng ? "png" : "pdf";
-      const docRef = db.collection(COLLECTION).doc();
-      storagePath = `${STORAGE_ROOT}/${docRef.id}/${Date.now()}_${file.name.replace(/[^\w.\-ぁ-んァ-ヶ一-龠]/g,"_")}`;
-      const ref = storage.ref(storagePath);
-      await ref.put(file, {contentType: isPng ? "image/png" : "application/pdf", contentDisposition: "inline"});
-      const downloadURL = await ref.getDownloadURL();
-      record.type = ext; record.storagePath = storagePath; record.downloadURL = downloadURL;
-      record.fileName = file.name; record.fileSize = file.size;
-      await docRef.set(record);
-    } else {
-      const url = safeUrl($("url").value.trim());
-      if (!url) throw new Error("有効なhttps:// または http:// のURLを入力してください。");
-      record.type = "link"; record.url = url;
-      await db.collection(COLLECTION).add(record);
-    }
-    $("player").value = ""; $("title").value = ""; $("file").value = ""; $("url").value = "";
-    showMessage("登録しました。");
+    const url = safeUrl($("url").value.trim());
+    if (!url) throw new Error("有効なhttps:// または http:// のURLを入力してください。");
+    const record = {
+      position, player, title, type: kind, url,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(), createdBy: currentUser.uid
+    };
+    await db.collection(COLLECTION).add(record);
+    $("player").value = ""; $("title").value = ""; $("url").value = "";
+    showMessage("登録しました。画像やPDFが表示されない場合は、公開URLがファイルを直接表示するものか確認してください。");
   } catch (e) {
     console.error(e);
-    if (storagePath) { try { await storage.ref(storagePath).delete(); } catch (_) {} }
-    showMessage(e.message || "登録できませんでした。Firebaseの設定・権限・保存容量を確認してください。");
+    showMessage(e.message || "登録できませんでした。Firestoreの権限と通信状態を確認してください。");
   } finally { btn.disabled = false; btn.textContent = "登録する"; }
 });
 auth.onAuthStateChanged(async user => {
+  const revision = ++authRevision;
   hideMessage();
+  if (unsubscribeItems) { unsubscribeItems(); unsubscribeItems = null; }
   if (!user) { setSignedOut(); return; }
   currentUser = user;
   const email = (user.email || "").toLowerCase();
-  isAnalyst = email === ANALYST_EMAIL.toLowerCase();
-  $("loginState").textContent = "ログイン中";
+  isAnalyst = email === ANALYST_EMAIL.toLowerCase() && user.emailVerified === true;
+  let approved = isAnalyst;
+  if (!isAnalyst) {
+    try {
+      const doc = await db.collection("approvedUsers").doc(user.uid).get();
+      const a = doc.exists ? doc.data() : null;
+      approved = !!(a && a.approved === true && a.uid === user.uid && a.email === user.email && a.role === "player");
+    } catch (e) { console.error(e); approved = false; }
+  }
+  if (revision !== authRevision) return;
+  $("loginState").textContent = approved ? "ログイン中" : "閲覧権限がありません";
   $("userEmail").textContent = user.email || "";
-  $("rolePill").textContent = isAnalyst ? "アナリスト・編集可能" : "選手・閲覧専用";
-  $("rolePill").className = "pill " + (isAnalyst ? "admin" : "viewer");
+  $("rolePill").textContent = isAnalyst ? "アナリスト・編集可能" : approved ? "選手・閲覧専用" : "未承認";
+  $("rolePill").className = "pill " + (isAnalyst ? "admin" : approved ? "viewer" : "");
   $("loginBtn").classList.add("hidden");
   $("logoutBtn").classList.remove("hidden");
   $("editor").classList.toggle("hidden", !isAnalyst);
-  startDataListener();
+  if (approved) startDataListener();
+  else {
+    allItems = [];
+    refreshNames();
+    $("cards").innerHTML = '<div class="empty">このアカウントには閲覧権限がありません。</div>';
+    showMessage("選手アカウントは管理者による承認が必要です。");
+  }
 });
 </script>
 </body>
