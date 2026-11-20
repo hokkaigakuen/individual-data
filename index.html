@@ -65,10 +65,10 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 
 <section id="bulkEditor" class="panel hidden">
 <h2>分析資料を一括登録（野手・投手）</h2>
-<p class="hint">GitHubの <code>individual-data-test/reports/野手/</code> と <code>reports/投手/</code> に、同じ名前の資料を先にアップロードしてください。公開URLの資料はログインなしでも閲覧できます。</p>
+<p class="hint">GitHubの <code>individual-data/reports/野手/</code> と <code>individual-data/reports/投手/</code> に、同じ名前の資料を先にアップロードしてください。公開URLの資料はログインなしでも閲覧できます。</p>
 <div class="grid">
 <div><label for="folderFiles">パソコンの reports フォルダを選択</label><input id="folderFiles" type="file" webkitdirectory directory multiple accept=".png,.pdf,image/png,application/pdf"><p class="hint">フォルダ内のファイル名と野手・投手の区分を読み取ります。ファイル本体はアップロードしません。</p></div>
-<div><label for="repoBase">GitHub Pagesの公開URL（reports の直前まで）</label><input id="repoBase" type="url" value="https://hokkaigakuen.github.io/individual-data-test/"></div>
+<div><label for="repoBase">GitHub Pagesの公開URL（reports の直前まで）</label><input id="repoBase" type="url" value="https://hokkaigakuen.github.io/individual-data/"></div>
 </div>
 <div class="actions"><button class="secondary" id="previewBulk">登録内容を確認</button><button class="primary" id="saveBulk" disabled>確認した資料を一括登録</button></div>
 <div id="bulkSummary" class="hint" aria-live="polite">フォルダを選択して「登録内容を確認」を押してください。</div>
@@ -135,6 +135,20 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 function escapeAttr(value) { return escapeHtml(value); }
+// テスト時に登録した旧URLを、実際の資料保存先に読み替える（Firestoreのデータは変更しない）。
+function reportUrl(value) {
+  const url = safeUrl(value);
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    if (u.origin === "https://hokkaigakuen.github.io" &&
+        u.pathname.startsWith("/individual-data-test/reports/")) {
+      u.pathname = "/individual-data/reports/" + u.pathname.slice("/individual-data-test/reports/".length);
+      return u.href;
+    }
+  } catch (_) {}
+  return url;
+}
 function safeUrl(value) {
   try {
     const u = new URL(value);
@@ -193,8 +207,8 @@ function render() {
   $("cards").innerHTML = list.map(x => {
     const created = x.createdAt && x.createdAt.toDate ? x.createdAt.toDate().toLocaleDateString("ja-JP") : "";
     let body = "";
-    if (x.type === "png") body = `<img src="${escapeAttr(safeUrl(x.url || x.downloadURL))}" alt="${escapeAttr(x.title)}" loading="lazy">`;
-    else if (x.type === "pdf") { const pdfUrl = safeUrl(x.url || x.downloadURL); body = `<iframe class="pdf" src="${escapeAttr(pdfUrl)}" title="${escapeAttr(x.title)}"></iframe><p class="hint"><a href="${escapeAttr(pdfUrl)}" target="_blank" rel="noopener noreferrer">PDFを別タブで開く</a></p>`; }
+    if (x.type === "png") body = `<img src="${escapeAttr(reportUrl(x.url || x.downloadURL))}" alt="${escapeAttr(x.title)}" loading="lazy">`;
+    else if (x.type === "pdf") { const pdfUrl = reportUrl(x.url || x.downloadURL); body = `<iframe class="pdf" src="${escapeAttr(pdfUrl)}" title="${escapeAttr(x.title)}"></iframe><p class="hint"><a href="${escapeAttr(pdfUrl)}" target="_blank" rel="noopener noreferrer">PDFを別タブで開く</a></p>`; }
     else if (x.type === "link") body = `<a class="link-card" href="${escapeAttr(safeUrl(x.url))}" target="_blank" rel="noopener noreferrer"><span class="link-icon">↗</span><span>${escapeHtml(x.title)}<br><small style="font-weight:400">${escapeHtml(x.url)}</small></span></a>`;
     return `<article class="item"><div class="item-top"><div><div class="item-title">${escapeHtml(x.title)}</div><div class="item-meta">${escapeHtml(x.position)}・${escapeHtml(x.player)}${created ? "・"+created : ""}</div></div>${isAnalyst ? `<button class="danger" data-delete="${escapeAttr(x.id)}">削除</button>` : ""}</div><div class="item-body">${body}</div></article>`;
   }).join("");
@@ -253,7 +267,7 @@ $("addBtn").addEventListener("click", async () => {
   if (!title) return showMessage("表示名を入力してください。");
   const btn = $("addBtn"); btn.disabled = true; btn.textContent = "登録中...";
   try {
-    const url = safeUrl($("url").value.trim());
+    const url = kind === "link" ? safeUrl($("url").value.trim()) : reportUrl($("url").value.trim());
     if (!url) throw new Error("有効なhttps:// または http:// のURLを入力してください。");
     const record = {
       position, player, title, type: kind, url,
@@ -273,6 +287,7 @@ function buildBulkCandidates() {
   const files = Array.from($("folderFiles").files || []);
   const base = safeUrl($("repoBase").value.trim());
   if (!base || !base.startsWith("https://")) throw new Error("GitHub PagesのHTTPS公開URLを入力してください。");
+  if (base.replace(/\/$/, "") !== "https://hokkaigakuen.github.io/individual-data") throw new Error("資料の保存先は https://hokkaigakuen.github.io/individual-data/ に設定してください。");
   const baseUrl = base.endsWith("/") ? base : base + "/";
   const seen = new Set();
   const result = [];
