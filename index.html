@@ -39,6 +39,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 #message{display:none;margin:0 0 14px;padding:11px 13px;border-radius:10px;font-size:13px;background:#fff7e6;color:#805500;line-height:1.5}
 #message.show{display:block}
 @media(max-width:560px){.selector{grid-template-columns:1fr}header{padding:20px 16px}.panel{padding:14px}.pdf{height:70vh;min-height:420px}}
+.suggestions{border:1px solid var(--line);border-radius:10px;margin-top:5px;max-height:220px;overflow:auto;background:white}.suggestions button{display:block;width:100%;text-align:left;border-radius:0;background:white;padding:10px 12px;font-weight:500;border-bottom:1px solid var(--line)}.suggestions button:hover{background:var(--pale)}.admin-entry{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px;border-bottom:1px solid var(--line);flex-wrap:wrap}.admin-entry:last-child{border-bottom:0}.admin-entry a{overflow-wrap:anywhere}.admin-entry .meta{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -80,7 +81,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 <h2>選手を選択して資料を見る</h2>
 <div class="tabs"><button class="tab active" data-position="野手">野手</button><button class="tab" data-position="投手">投手</button></div>
 <div class="selector">
-<div><label for="filterPlayer">選手名</label><select id="filterPlayer"><option value="">選手を選択してください</option></select></div>
+<div><label for="filterPlayer">選手名を検索</label><input id="filterPlayer" type="search" placeholder="名前を入力して候補を選択" autocomplete="off"><div id="playerSuggestions" class="suggestions hidden"></div><p class="hint">名前の一部を入力すると候補が表示されます。</p></div>
 <div><label>表示対象</label><div id="selectionSummary" style="padding:11px 12px;border-radius:10px;background:#f8fafc;color:#64748b;font-size:14px">区分と選手名を選ぶと資料が表示されます</div></div>
 </div>
 </section>
@@ -89,6 +90,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 <div class="results-head"><h2 id="listTitle">野手の資料</h2><span class="count" id="count">0件</span></div>
 <div id="cards" class="cards"><div class="empty">ログイン後、選手を選択してください。</div></div>
 </section>
+<section id="adminFiles" class="panel hidden"><div class="results-head"><h2>登録済み資料一覧（アナリスト専用）</h2><span id="adminCount" class="count">0件</span></div><p class="hint">すべての登録資料を確認できます。削除するとFirestoreの登録情報だけが削除され、GitHub上の元ファイルは残ります。</p><div class="grid" style="margin-top:12px"><div><label for="adminSearch">選手名・資料名を検索</label><input id="adminSearch" type="search" placeholder="選手名・資料名"></div><div><label for="adminPosition">区分</label><select id="adminPosition"><option value="">すべて</option><option value="野手">野手</option><option value="投手">投手</option></select></div></div><div id="adminFileList" style="margin-top:12px"></div></section>
 <p class="hint">承認済み選手はログイン後に閲覧できます。資料の追加・削除はアナリスト用Googleアカウントのみ可能です。</p>
 </main>
 
@@ -167,7 +169,9 @@ function setSignedOut() {
   $("editor").classList.add("hidden");
   $("bulkEditor").classList.add("hidden");
   $("cards").innerHTML = '<div class="empty">Googleログインすると資料を閲覧できます。</div>';
-  $("filterPlayer").innerHTML = '<option value="">選手を選択してください</option>';
+  $("filterPlayer").value = "";
+  $("playerSuggestions").classList.add("hidden");
+  $("adminFiles").classList.add("hidden");
   $("count").textContent = "0件";
   if (unsubscribeItems) { unsubscribeItems(); unsubscribeItems = null; }
 }
@@ -181,16 +185,42 @@ function startDataListener() {
     showMessage("資料データを読み込めませんでした。Firestoreのルールとログイン状態を確認してください。");
   });
 }
+function positionNames() {
+  return [...new Set(allItems.filter(x => x.position === activePosition).map(x => x.player).filter(Boolean))].sort((a,b) => a.localeCompare(b,"ja"));
+}
+function updateSuggestions() {
+  const query = $("filterPlayer").value.trim().toLocaleLowerCase("ja");
+  const matches = positionNames().filter(n => n.toLocaleLowerCase("ja").includes(query)).slice(0,60);
+  const box = $("playerSuggestions");
+  box.innerHTML = matches.map(n => `<button type="button" data-name="${escapeAttr(n)}">${escapeHtml(n)}</button>`).join("") || '<div class="hint" style="padding:10px">候補がありません</div>';
+  box.classList.remove("hidden");
+  box.querySelectorAll("[data-name]").forEach(btn => btn.addEventListener("click", () => {
+    $("filterPlayer").value = btn.dataset.name;
+    box.classList.add("hidden");
+    render();
+  }));
+}
 function refreshNames() {
   const previous = $("filterPlayer").value;
-  const names = [...new Set(allItems.filter(x => x.position === activePosition).map(x => x.player).filter(Boolean))].sort((a,b) => a.localeCompare(b,"ja"));
-  $("filterPlayer").innerHTML = '<option value="">選手を選択してください</option>' +
-    names.map(n => `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`).join("");
-  if (names.includes(previous)) $("filterPlayer").value = previous;
+  if (previous && !positionNames().includes(previous)) $("filterPlayer").value = "";
+  $("playerSuggestions").classList.add("hidden");
   render();
+  renderAdminFiles();
+}
+function renderAdminFiles() {
+  if (!isAnalyst) return;
+  const q = $("adminSearch").value.trim().toLocaleLowerCase("ja");
+  const pos = $("adminPosition").value;
+  const list = allItems.filter(x => (!pos || x.position === pos) && (!q || [x.player,x.title,x.type].some(v => String(v||"").toLocaleLowerCase("ja").includes(q))));
+  $("adminCount").textContent = `${list.length} / ${allItems.length} 件`;
+  $("adminFileList").innerHTML = list.length ? list.map(x => {
+    const url = x.type === "link" ? safeUrl(x.url) : reportUrl(x.url || x.downloadURL);
+    return `<div class="admin-entry"><div style="min-width:0;flex:1"><strong>${escapeHtml(x.player || "氏名未設定")}</strong> <span class="meta">${escapeHtml(x.position || "")}・${escapeHtml((x.type || "").toUpperCase())}</span><div>${escapeHtml(x.title || "資料")}</div>${url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">資料を開く</a>` : '<span class="meta">URLなし</span>'}</div><button type="button" class="danger" data-admin-delete="${escapeAttr(x.id)}">この資料を削除</button></div>`;
+  }).join("") : '<div class="empty">該当する資料がありません。</div>';
+  $("adminFileList").querySelectorAll("[data-admin-delete]").forEach(btn => btn.addEventListener("click", () => deleteItem(btn.dataset.adminDelete)));
 }
 function render() {
-  const player = $("filterPlayer").value;
+  const player = positionNames().includes($("filterPlayer").value.trim()) ? $("filterPlayer").value.trim() : "";
   $("listTitle").textContent = activePosition + "の資料" + (player ? "：" + player : "");
   $("selectionSummary").textContent = player ? `${activePosition}／${player}` : "区分と選手名を選ぶと資料が表示されます";
   const list = allItems.filter(x => x.position === activePosition && x.player === player);
@@ -217,7 +247,7 @@ function render() {
 async function deleteItem(id) {
   if (!isAnalyst) return;
   const item = allItems.find(x => x.id === id);
-  if (!item || !confirm(`「${item.title}」を削除しますか？`)) return;
+  if (!item || !confirm(`「${item.position}／${item.player}：${item.title}」の登録情報を削除しますか？\nGitHub上の元ファイルは削除されません。`)) return;
   try {
     await db.collection(COLLECTION).doc(id).delete();
     showMessage("資料を削除しました。");
@@ -236,9 +266,14 @@ updateKindLabel();
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => {
   activePosition = tab.dataset.position;
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === tab));
+  $("filterPlayer").value = "";
   refreshNames();
 }));
-$("filterPlayer").addEventListener("change", render);
+$("filterPlayer").addEventListener("input", () => { updateSuggestions(); render(); });
+$("filterPlayer").addEventListener("focus", updateSuggestions);
+$("filterPlayer").addEventListener("keydown", e => { if (e.key === "Escape") $("playerSuggestions").classList.add("hidden"); });
+$("adminSearch").addEventListener("input", renderAdminFiles);
+$("adminPosition").addEventListener("change", renderAdminFiles);
 $("clearBtn").addEventListener("click", () => {
   $("player").value = ""; $("title").value = ""; $("url").value = "";
 });
@@ -374,6 +409,7 @@ auth.onAuthStateChanged(async user => {
   $("logoutBtn").classList.remove("hidden");
   $("editor").classList.toggle("hidden", !isAnalyst);
   $("bulkEditor").classList.toggle("hidden", !isAnalyst);
+  $("adminFiles").classList.toggle("hidden", !isAnalyst);
   if (approved) startDataListener();
   else {
     allItems = [];
