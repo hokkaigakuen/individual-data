@@ -40,6 +40,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
 #message.show{display:block}
 @media(max-width:560px){.selector{grid-template-columns:1fr}header{padding:20px 16px}.panel{padding:14px}.pdf{height:70vh;min-height:420px}}
 .suggestions{border:1px solid var(--line);border-radius:10px;margin-top:5px;max-height:220px;overflow:auto;background:white}.suggestions button{display:block;width:100%;text-align:left;border-radius:0;background:white;padding:10px 12px;font-weight:500;border-bottom:1px solid var(--line)}.suggestions button:hover{background:var(--pale)}.admin-entry{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px;border-bottom:1px solid var(--line);flex-wrap:wrap}.admin-entry:last-child{border-bottom:0}.admin-entry a{overflow-wrap:anywhere}.admin-entry .meta{font-size:12px;color:var(--muted)}
+#passwordGate{position:fixed;inset:0;background:rgba(9,25,47,.78);z-index:9999;display:none;align-items:center;justify-content:center;padding:16px}#passwordGate .gate-card{width:min(100%,390px);background:white;border-radius:16px;padding:26px;box-shadow:0 15px 50px #0004}#passwordGate h2{margin:0 0 10px;color:var(--navy)}#passwordGate p{font-size:13px;color:var(--muted)}#passwordGate input{margin:10px 0}#passwordGate .gate-error{color:#b42318;font-size:12px;min-height:18px}
 </style>
 </head>
 <body>
@@ -50,6 +51,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.primary{background:var(--blue);co
   <div class="actions" style="margin:0"><span id="rolePill" class="pill">確認中</span><button id="loginBtn" class="primary hidden">Googleでログイン</button><button id="logoutBtn" class="secondary hidden">ログアウト</button></div>
 </div>
 <div id="message"></div>
+<div id="passwordGate" role="dialog" aria-modal="true" aria-labelledby="passwordTitle"><div class="gate-card"><h2 id="passwordTitle">閲覧パスワード</h2><p>個人ページを開くにはパスワードを入力してください。</p><form id="passwordForm"><label for="sharedPassword">パスワード</label><input id="sharedPassword" type="password" autocomplete="off" required placeholder="パスワードを入力"><div id="passwordError" class="gate-error" aria-live="polite"></div><button class="primary" type="submit" style="width:100%">ページを開く</button></form></div></div>
 
 <section id="editor" class="panel hidden">
 <h2>資料・リンクを登録</h2>
@@ -124,6 +126,34 @@ let allItems = [];
 let unsubscribeItems = null;
 let authRevision = 0;
 let bulkCandidates = [];
+const PASSWORD_SESSION_KEY = "hgu_individual_password_ok";
+let passwordUnlocked = false;
+function showPasswordGate(){
+  passwordUnlocked=false;
+  $("passwordError").textContent="";
+  $("sharedPassword").value="";
+  $("passwordGate").style.display="flex";
+}
+function hidePasswordGate(){ $("passwordGate").style.display="none"; }
+$("passwordForm").addEventListener("submit", event=>{
+  event.preventDefault();
+  if($("sharedPassword").value!=="hgu89"){
+    $("passwordError").textContent="パスワードが違います。";
+    return;
+  }
+  sessionStorage.setItem(PASSWORD_SESSION_KEY,"1");
+  passwordUnlocked=true;
+  hidePasswordGate();
+  if(currentUser){
+    const approved=isAnalyst || $("rolePill").textContent==="選手・閲覧専用";
+    if(approved){
+      $("editor").classList.toggle("hidden",!isAnalyst);
+      $("bulkEditor").classList.toggle("hidden",!isAnalyst);
+      $("adminFiles").classList.toggle("hidden",!isAnalyst);
+      startDataListener();
+    }
+  }
+});
 
 function showMessage(text) {
   $("message").textContent = text;
@@ -158,6 +188,9 @@ function safeUrl(value) {
   } catch { return ""; }
 }
 function setSignedOut() {
+  passwordUnlocked=false;
+  hidePasswordGate();
+  sessionStorage.removeItem(PASSWORD_SESSION_KEY);
   authRevision++;
   currentUser = null; isAnalyst = false; allItems = [];
   $("loginState").textContent = "ログインしていません";
@@ -225,7 +258,7 @@ function render() {
   $("selectionSummary").textContent = player ? `${activePosition}／${player}` : "区分と選手名を選ぶと資料が表示されます";
   const list = allItems.filter(x => x.position === activePosition && x.player === player);
   $("count").textContent = list.length + "件";
-  if (!currentUser) {
+  if (!currentUser || !passwordUnlocked) {
     $("cards").innerHTML = '<div class="empty">Googleログインすると資料を閲覧できます。</div>'; return;
   }
   if (!player) {
@@ -291,6 +324,9 @@ $("loginBtn").addEventListener("click", async () => {
   }
 });
 $("logoutBtn").addEventListener("click", async () => {
+  sessionStorage.removeItem(PASSWORD_SESSION_KEY);
+  passwordUnlocked=false;
+  hidePasswordGate();
   try { await auth.signOut(); } catch (e) { showMessage("ログアウトに失敗しました: " + e.message); }
 });
 $("addBtn").addEventListener("click", async () => {
@@ -407,10 +443,23 @@ auth.onAuthStateChanged(async user => {
   $("rolePill").className = "pill " + (isAnalyst ? "admin" : approved ? "viewer" : "");
   $("loginBtn").classList.add("hidden");
   $("logoutBtn").classList.remove("hidden");
-  $("editor").classList.toggle("hidden", !isAnalyst);
-  $("bulkEditor").classList.toggle("hidden", !isAnalyst);
-  $("adminFiles").classList.toggle("hidden", !isAnalyst);
-  if (approved) startDataListener();
+  passwordUnlocked=false;
+  $("editor").classList.add("hidden");
+  $("bulkEditor").classList.add("hidden");
+  $("adminFiles").classList.add("hidden");
+  if (approved) {
+    if (sessionStorage.getItem(PASSWORD_SESSION_KEY)==="1") {
+      passwordUnlocked=true;
+      hidePasswordGate();
+      $("editor").classList.toggle("hidden", !isAnalyst);
+      $("bulkEditor").classList.toggle("hidden", !isAnalyst);
+      $("adminFiles").classList.toggle("hidden", !isAnalyst);
+      startDataListener();
+    } else {
+      $("cards").innerHTML='<div class="empty">パスワード入力後に資料を表示します。</div>';
+      showPasswordGate();
+    }
+  }
   else {
     allItems = [];
     refreshNames();
